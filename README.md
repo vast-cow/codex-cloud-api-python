@@ -1,4 +1,4 @@
-# Codex API CLI
+# Codex Cloud API CLI
 
 A small Python utility for calling Codex / ChatGPT backend APIs using credentials already managed by the Codex CLI.
 
@@ -109,13 +109,13 @@ If your credentials exist only in that store, the tool will report that the cred
 The general syntax is:
 
 ```text
-python codex_api.py METHOD PATH [OPTIONS]
+python codex_cloud_api.py METHOD PATH [OPTIONS]
 ```
 
 For example:
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 By default, requests are sent relative to:
@@ -127,7 +127,7 @@ https://chatgpt.com/backend-api
 Therefore:
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 requests:
@@ -141,13 +141,13 @@ GET https://chatgpt.com/backend-api/wham/environments
 ### List Codex environments
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 ### List tasks
 
 ```bash
-python codex_api.py GET /wham/tasks/list
+python codex_cloud_api.py GET /wham/tasks/list
 ```
 
 ### Add query parameters
@@ -155,14 +155,14 @@ python codex_api.py GET /wham/tasks/list
 Use `--query` once per parameter:
 
 ```bash
-python codex_api.py GET /wham/tasks/list \
+python codex_cloud_api.py GET /wham/tasks/list \
   --query limit=20
 ```
 
 Multiple parameters can be supplied:
 
 ```bash
-python codex_api.py GET /wham/tasks/list \
+python codex_cloud_api.py GET /wham/tasks/list \
   --query limit=20 \
   --query cursor=abc123
 ```
@@ -170,13 +170,13 @@ python codex_api.py GET /wham/tasks/list \
 ### Retrieve a task
 
 ```bash
-python codex_api.py GET /wham/tasks/TASK_ID
+python codex_cloud_api.py GET /wham/tasks/TASK_ID
 ```
 
 Example:
 
 ```bash
-python codex_api.py GET /wham/tasks/task_123456
+python codex_cloud_api.py GET /wham/tasks/task_123456
 ```
 
 ### Create a task
@@ -184,7 +184,7 @@ python codex_api.py GET /wham/tasks/task_123456
 A task request can be supplied directly:
 
 ```bash
-python codex_api.py POST /wham/tasks \
+python codex_cloud_api.py POST /wham/tasks \
   --json '{
     "new_task": {
       "environment_id": "ENVIRONMENT_ID",
@@ -235,14 +235,14 @@ Create `task.json`:
 Then run:
 
 ```bash
-python codex_api.py POST /wham/tasks \
+python codex_cloud_api.py POST /wham/tasks \
   --json @task.json
 ```
 
 ### Read the JSON body from stdin
 
 ```bash
-cat task.json | python codex_api.py POST /wham/tasks --json -
+cat task.json | python codex_cloud_api.py POST /wham/tasks --json -
 ```
 
 This is also useful with dynamically generated JSON:
@@ -270,7 +270,7 @@ jq -n \
       }
     ]
   }' |
-python codex_api.py POST /wham/tasks --json -
+python codex_cloud_api.py POST /wham/tasks --json -
 ```
 
 ## Response output
@@ -280,7 +280,7 @@ JSON responses are pretty-printed by default.
 For example:
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 may produce:
@@ -307,13 +307,13 @@ HTTP 200
 Use `--raw` to write the response body without JSON formatting:
 
 ```bash
-python codex_api.py GET /wham/tasks/TASK_ID --raw
+python codex_cloud_api.py GET /wham/tasks/TASK_ID --raw
 ```
 
 This can be useful when piping the result to another program:
 
 ```bash
-python codex_api.py GET /wham/tasks/TASK_ID --raw | jq .
+python codex_cloud_api.py GET /wham/tasks/TASK_ID --raw | jq .
 ```
 
 ### Include response headers
@@ -321,7 +321,7 @@ python codex_api.py GET /wham/tasks/TASK_ID --raw | jq .
 Use:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --include-headers
 ```
 
@@ -332,14 +332,14 @@ Response headers are written to stderr.
 Additional request headers can be supplied with `--header`:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --header 'Accept-Language: en-US'
 ```
 
 The option can be repeated:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --header 'Accept-Language: en-US' \
   --header 'X-Custom-Header: example'
 ```
@@ -369,7 +369,7 @@ In automatic mode, the script tries:
 ### Force `auth.json`
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --credential-source file
 ```
 
@@ -388,7 +388,7 @@ or, if `CODEX_HOME` is not set:
 ### Use a specific auth file
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --credential-source file \
   --auth-file /path/to/auth.json
 ```
@@ -404,7 +404,7 @@ pip install keyring
 Then:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --credential-source keyring
 ```
 
@@ -425,7 +425,7 @@ if set, otherwise:
 You can override it:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --codex-home ~/.codex-work
 ```
 
@@ -440,7 +440,7 @@ ChatGPT-Account-Id: ...
 You can override it for a single request:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --account-id ACCOUNT_ID
 ```
 
@@ -498,7 +498,7 @@ It does not continuously retry authentication failures.
 For diagnostics, token refresh can be disabled:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --no-refresh
 ```
 
@@ -509,7 +509,7 @@ In this mode, the currently stored access token is used as-is.
 Use `-v` or `--verbose`:
 
 ```bash
-python codex_api.py GET /wham/environments -v
+python codex_cloud_api.py GET /wham/environments -v
 ```
 
 Verbose output includes information such as:
@@ -530,7 +530,7 @@ The default total HTTP timeout is 60 seconds.
 Override it with:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --timeout 120
 ```
 
@@ -547,7 +547,7 @@ https://chatgpt.com/backend-api
 It can be changed using:
 
 ```bash
-python codex_api.py GET /wham/environments \
+python codex_cloud_api.py GET /wham/environments \
   --base-url https://chatgpt.com/backend-api
 ```
 
@@ -556,7 +556,7 @@ Saved ChatGPT credentials are intentionally restricted to trusted ChatGPT hosts.
 The script rejects arbitrary destinations such as:
 
 ```bash
-python codex_api.py GET /some/path \
+python codex_cloud_api.py GET /some/path \
   --base-url https://example.com
 ```
 
@@ -567,13 +567,13 @@ The API target itself must also be a path rather than an absolute URL.
 This is rejected:
 
 ```bash
-python codex_api.py GET https://example.com/api
+python codex_cloud_api.py GET https://example.com/api
 ```
 
 Use:
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 instead.
@@ -583,13 +583,13 @@ instead.
 The script accepts both paths relative to the configured API base:
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 and paths already rooted at a known backend prefix:
 
 ```bash
-python codex_api.py GET /backend-api/wham/environments
+python codex_cloud_api.py GET /backend-api/wham/environments
 ```
 
 Similarly, `/api/codex/...` paths are not prefixed with `/backend-api`.
@@ -601,7 +601,7 @@ The following endpoints are examples observed in Codex's current implementation.
 ### Environments
 
 ```bash
-python codex_api.py GET /wham/environments
+python codex_cloud_api.py GET /wham/environments
 ```
 
 ### Tasks
@@ -609,33 +609,33 @@ python codex_api.py GET /wham/environments
 List tasks:
 
 ```bash
-python codex_api.py GET /wham/tasks/list
+python codex_cloud_api.py GET /wham/tasks/list
 ```
 
 Retrieve a task:
 
 ```bash
-python codex_api.py GET /wham/tasks/TASK_ID
+python codex_cloud_api.py GET /wham/tasks/TASK_ID
 ```
 
 Create a task:
 
 ```bash
-python codex_api.py POST /wham/tasks \
+python codex_cloud_api.py POST /wham/tasks \
   --json @task.json
 ```
 
 ### Inspect a task with `jq`
 
 ```bash
-python codex_api.py GET /wham/tasks/TASK_ID --raw |
+python codex_cloud_api.py GET /wham/tasks/TASK_ID --raw |
 jq .
 ```
 
 Save it:
 
 ```bash
-python codex_api.py GET /wham/tasks/TASK_ID --raw \
+python codex_cloud_api.py GET /wham/tasks/TASK_ID --raw \
   > task.json
 ```
 
@@ -647,7 +647,7 @@ A simple shell polling loop can be built around the generic API client:
 TASK_ID="task_..."
 
 while true; do
-  python codex_api.py GET "/wham/tasks/$TASK_ID" --raw > task.json
+  python codex_cloud_api.py GET "/wham/tasks/$TASK_ID" --raw > task.json
 
   jq . task.json
 
@@ -680,7 +680,7 @@ The script uses the following general exit behavior:
 This makes it suitable for shell scripts:
 
 ```bash
-if python codex_api.py GET /wham/environments; then
+if python codex_cloud_api.py GET /wham/environments; then
   echo "Request succeeded"
 else
   echo "Request failed"
@@ -690,7 +690,7 @@ fi
 ## CLI reference
 
 ```text
-usage: codex_api.py [-h]
+usage: codex_cloud_api.py [-h]
                     [--base-url BASE_URL]
                     [--codex-home CODEX_HOME]
                     [--auth-file AUTH_FILE]

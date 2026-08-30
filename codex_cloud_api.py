@@ -3,10 +3,10 @@
 Call Codex/ChatGPT backend APIs using credentials already stored by Codex CLI.
 
 Examples:
-  python codex_api.py GET /wham/environments
-  python codex_api.py GET /wham/tasks/list --query limit=20
-  python codex_api.py POST /wham/tasks --json @task.json
-  python codex_api.py GET /backend-api/wham/environments
+  python codex_cloud_api.py GET /wham/environments
+  python codex_cloud_api.py GET /wham/tasks/list --query limit=20
+  python codex_cloud_api.py POST /wham/tasks --json @task.json
+  python codex_cloud_api.py GET /backend-api/wham/environments
 
 Dependencies:
   pip install aiohttp
