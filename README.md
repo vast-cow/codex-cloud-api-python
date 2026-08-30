@@ -25,6 +25,26 @@ async with CodexCloudClient(
 The ChatGPT bearer token is not an OpenAI Platform API key. Never pass either
 token on a command line or commit it. Custom origins are rejected by default.
 
+## Task lifecycle examples
+
+[`examples/task_lifecycle.py`](examples/task_lifecycle.py) contains separate,
+reusable async examples for:
+
+- listing available environments;
+- listing branches for a selected environment;
+- creating a task, checking its immediate status, and polling until it is
+  complete;
+- retrieving assistant summaries, pull-request titles/messages, and unified
+  diffs; and
+- archiving a task.
+
+Call `run_task_lifecycle` to execute the complete sequence, or import an
+individual example function. Branch listing requires a `branch_provider` (such
+as `GitHubBranchProvider`). Archiving is intentionally capability-gated because
+its wire contract varies by backend; pass an application-specific, verified
+provider with an async `archive(task_id)` method as `archive_provider` when
+constructing `CodexCloudClient`.
+
 ## Development
 
 ```console
