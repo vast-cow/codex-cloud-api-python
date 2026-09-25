@@ -1,9 +1,8 @@
 # Codex Cloud API CLI
 
-A small Python utility for calling Codex / ChatGPT backend APIs using credentials kept in its own plain-text JSON file, separate from the Codex CLI.
+A small Python utility for calling Codex / ChatGPT backend APIs using credentials kept in its own plain-text JSON file.
 
-It reuses an existing Codex ChatGPT session when available, or performs an interactive
-Device Code login on first use. It automatically attaches the required authentication
+It performs an interactive Device Code login on first use. It automatically attaches the required authentication
 headers, refreshes expired access tokens when possible, and lets you issue arbitrary
 HTTP requests to Codex backend paths.
 
@@ -12,10 +11,8 @@ HTTP requests to Codex backend paths.
 
 ## Features
 
-* Imports credentials created by `codex login`, or signs in with Device Code, on first use
+* Signs in with Device Code on first use
 * Manages its own plain-text `~/.codex-cloud-api/credentials.json` file
-* Never writes token refreshes back to the original Codex store
-* Can import from `~/.codex/auth.json` or the Codex direct OS keyring store
 * Automatically sends:
 
   * `Authorization: Bearer <access_token>`
@@ -46,18 +43,12 @@ HTTP requests to Codex backend paths.
 ## Requirements
 
 * Python 3.10+
-* A ChatGPT account (an existing Codex installation/session is optional)
+* A ChatGPT account
 
 Install the required Python dependency:
 
 ```bash
 pip install aiohttp
-```
-
-If your Codex credentials are stored in the legacy/direct OS keyring, also install:
-
-```bash
-pip install keyring
 ```
 
 ## Authentication
@@ -68,24 +59,19 @@ Run a request directly; a separate `codex login` is not required:
 python codex_cloud_api.py GET /wham/environments
 ```
 
-With the default `--credential-source auto`, the tool first tries the Codex direct
-keyring and `$CODEX_HOME/auth.json`. If neither contains usable credentials, it prints
+If its credential file does not exist, the tool prints
 `https://auth.openai.com/codex/device` and a one-time code. Open that URL, sign in to
 ChatGPT, and enter the displayed code. The original request continues after approval.
 
-The imported or newly issued OAuth document is written as an independent plain-text
-JSON copy to:
+The newly issued OAuth document is written as a plain-text JSON file at:
 
 ```text
 ~/.codex-cloud-api/credentials.json
 ```
 
 The directory and file are created with owner-only permissions on POSIX systems.
-All later reads and token-refresh writes use this independent file; the original
-Codex file or keyring entry is not changed. Because refresh tokens may rotate,
-Codex and this tool can subsequently hold different sessions. Run the command
-below after deleting the managed file if you intentionally want to import the
-current Codex session again.
+All later reads and token-refresh writes use this file. Delete it to start a new
+Device Code login on the next request.
 
 Override the managed location with either:
 
@@ -115,16 +101,6 @@ The expected JSON structure is:
 The script prints only the short-lived user code, never OAuth tokens, authorization
 codes, or the PKCE verifier. Subsequent runs reuse the saved credentials and refresh
 them with the existing refresh-token implementation when necessary.
-
-### Import sources
-
-When its managed credential file does not yet exist, `auto` imports from the Codex
-direct OS keyring first, then `$CODEX_HOME/auth.json`, and finally starts Device Code
-login. Use `--credential-source file` or `--credential-source keyring` to require that
-specific import source without a login fallback. Use `--credential-source device-code`
-to skip Codex import and sign in directly. An existing managed file always takes
-precedence. Encrypted Codex stores such as `~/.codex/secrets/codex_auth.age` are not
-read; `auto` can simply create this tool's own session instead.
 
 ## Basic usage
 
@@ -375,7 +351,7 @@ Host
 Cookie
 ```
 
-## Credential storage and initial import
+## Credential storage and initial login
 
 The tool always operates on its own plain-text JSON credential file. Its default is:
 
@@ -391,29 +367,12 @@ python codex_cloud_api.py GET /wham/environments \
 ```
 
 `CODEX_CLOUD_API_CREDENTIALS` changes the default without adding a command-line
-option. If the managed file is absent, `--credential-source auto` imports once
-from the Codex keyring or `$CODEX_HOME/auth.json`, or launches Device Code login when
-neither is usable. To force the initial source:
-
-```bash
-python codex_cloud_api.py GET /wham/environments \
-  --credential-source file
-```
-
-or install `keyring` and use `--credential-source keyring`. To explicitly log in:
-
-```bash
-python codex_cloud_api.py GET /wham/environments \
-  --credential-source device-code
-```
-
-`--codex-home` and
-`CODEX_HOME` identify only the original Codex installation used for that initial
-import; they do not change this tool's managed credential location.
+option. If the managed file is absent, the tool launches Device Code login and saves
+the resulting credentials there.
 
 ## ChatGPT account/workspace selection
 
-When available, the script reads the ChatGPT account ID from the stored Codex credentials and sends:
+When available, the script reads the ChatGPT account ID from its stored credentials and sends:
 
 ```text
 ChatGPT-Account-Id: ...
@@ -426,7 +385,7 @@ python codex_cloud_api.py GET /wham/environments \
   --account-id ACCOUNT_ID
 ```
 
-This does not modify the stored Codex credentials.
+This does not modify the stored credentials.
 
 ## OAuth token refresh
 
@@ -674,9 +633,7 @@ fi
 ```text
 usage: codex_cloud_api.py [-h]
                     [--base-url BASE_URL]
-                    [--codex-home CODEX_HOME]
                     [--credential-file CREDENTIAL_FILE]
-                    [--credential-source {auto,file,keyring,device-code}]
                     [--account-id ACCOUNT_ID]
                     [--query NAME=VALUE]
                     [--header NAME:VALUE]
@@ -727,37 +684,9 @@ Default:
 https://chatgpt.com/backend-api
 ```
 
-`--codex-home PATH`
-
-Set the Codex home directory.
-
-Default:
-
-```text
-$CODEX_HOME
-```
-
-or:
-
-```text
-~/.codex
-```
-
 `--credential-file PATH`, `--auth-file PATH`
 
-Use a specific independent plain-text JSON credential file. `--auth-file` is a legacy alias.
-
-`--credential-source auto|file|keyring|device-code`
-
-Select how to obtain credentials when the managed file is absent. `auto` tries the
-keyring, the Codex auth file, then Device Code. Explicit `file` and `keyring` choices
-fail if unavailable; `device-code` starts interactive login.
-
-Default:
-
-```text
-auto
-```
+Use a specific plain-text JSON credential file. `--auth-file` is a legacy alias.
 
 `--account-id ID`
 
@@ -819,7 +748,6 @@ This tool handles credentials equivalent to an authenticated ChatGPT session. Tr
 
 Never:
 
-* commit `~/.codex/auth.json` to Git
 * commit `~/.codex-cloud-api/credentials.json` to Git
 * paste its contents into issues
 * log access or refresh tokens
@@ -828,7 +756,6 @@ Never:
 A suitable `.gitignore` entry is:
 
 ```gitignore
-auth.json
 credentials.json
 *.token
 ```
@@ -849,7 +776,7 @@ This avoids forwarding authentication headers to an unexpected redirect destinat
 
 Refresh tokens should be treated as long-lived credentials.
 
-If a refresh rotates the refresh token, the script updates only its managed JSON file. The original Codex installation remains untouched.
+If a refresh rotates the refresh token, the script updates its managed JSON file.
 
 Running multiple instances that modify the same managed credential file may still cause races. Avoid editing it manually while requests are running.
 
@@ -875,23 +802,6 @@ Request and response JSON schemas may change independently of this tool.
 
 The generic HTTP interface is intentional: most backend changes can be handled by changing the requested path or JSON payload without changing the authentication client.
 
-### Encrypted credential store
-
-The newer Codex encrypted credential store is not currently supported.
-
-The script can initially import from:
-
-* Codex `auth.json`
-* the direct OS keyring representation
-
-After import it supports only its own plain-text JSON credential file.
-
-It does not directly decrypt:
-
-```text
-~/.codex/secrets/codex_auth.age
-```
-
 ### Authentication modes
 
 This tool is intended for Codex ChatGPT OAuth credentials.
@@ -915,12 +825,12 @@ This tool follows the Codex CLI's Device Code authentication protocol, including
 
 This tool provides a thin asynchronous HTTP client on top of those existing credentials so that backend behavior can be inspected or automated without reimplementing the full Codex CLI.
 
-The design intentionally keeps this tool's mutable credentials separate:
+The design keeps this tool's authentication flow self-contained:
 
 ```text
-Codex login store ── one-time import ──→ independent JSON credentials
-                                            ↓
-                                    OAuth authentication
+Device Code login ──→ managed JSON credentials
+                              ↓
+                     OAuth authentication
         ↓
 aiohttp transport
         ↓

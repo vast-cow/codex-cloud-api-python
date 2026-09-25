@@ -19,11 +19,9 @@ from codex_cloud_api import (
 )
 
 
-def args(codex_home: Path, credential_file: Path) -> argparse.Namespace:
+def args(credential_file: Path) -> argparse.Namespace:
     return argparse.Namespace(
-        codex_home=str(codex_home),
         credential_file=str(credential_file),
-        credential_source="file",
         verbose=False,
         timeout=60.0,
     )
@@ -40,43 +38,28 @@ class CredentialStorageTests(unittest.TestCase):
         "last_refresh": "2026-01-01T00:00:00Z",
     }
 
-    def test_imports_to_independent_json_file(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            codex_home = root / "codex"
-            codex_home.mkdir()
-            source = codex_home / "auth.json"
-            source.write_text(json.dumps(self.document), encoding="utf-8")
-            managed = root / "cloud-api" / "credentials.json"
-
-            credentials = choose_store(args(codex_home, managed))
-
-            self.assertEqual(credentials.store.description, str(managed))
-            self.assertEqual(json.loads(managed.read_text()), self.document)
-            self.assertEqual(json.loads(source.read_text()), self.document)
-            if os.name == "posix":
-                self.assertEqual(managed.stat().st_mode & 0o777, 0o600)
-                self.assertEqual(managed.parent.stat().st_mode & 0o777, 0o700)
-
-    def test_existing_managed_file_does_not_require_original(self) -> None:
+    def test_loads_managed_json_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             managed = root / "credentials.json"
             managed.write_text(json.dumps(self.document), encoding="utf-8")
 
-            credentials = choose_store(args(root / "missing-codex", managed))
+            credentials = choose_store(args(managed))
 
-            self.assertEqual(credentials.access_token, "access")
             self.assertEqual(credentials.store.description, str(managed))
+            self.assertEqual(json.loads(managed.read_text()), self.document)
 
-    def test_refuses_to_manage_codex_auth_file_directly(self) -> None:
+    def test_missing_managed_file_requests_login(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            codex_home = Path(directory)
-            source = codex_home / "auth.json"
-            source.write_text(json.dumps(self.document), encoding="utf-8")
+            self.assertIsNone(choose_store(args(Path(directory) / "missing.json")))
 
-            with self.assertRaisesRegex(AuthError, "must be separate"):
-                choose_store(args(codex_home, source))
+    def test_store_creates_private_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            managed = Path(directory) / "cloud-api" / "credentials.json"
+            __import__("codex_cloud_api").AuthJsonStore(managed).save(self.document)
+            if os.name == "posix":
+                self.assertEqual(managed.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(managed.parent.stat().st_mode & 0o777, 0o700)
 
 
 class FakeResponse:
@@ -180,33 +163,22 @@ class DeviceCodeTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertFalse(self.managed.exists())
 
-    async def test_auto_and_explicit_device_code_login(self):
+    async def test_missing_credentials_starts_device_code_login(self):
         import unittest.mock as mock
-        for source in ("auto", "device-code"):
-            options = args(self.root / f"codex-{source}", self.root / f"{source}.json")
-            options.credential_source = source
-            expected = object()
-            with mock.patch("codex_cloud_api.device_code_login", return_value=expected) as login:
-                self.assertIs(await acquire_credentials(options), expected)
-                login.assert_awaited_once()
+        options = args(self.root / "missing.json")
+        expected = object()
+        with mock.patch("codex_cloud_api.device_code_login", return_value=expected) as login:
+            self.assertIs(await acquire_credentials(options), expected)
+            login.assert_awaited_once()
 
-    async def test_managed_and_file_sources_do_not_start_device_login(self):
+    async def test_managed_credentials_do_not_start_device_login(self):
         import unittest.mock as mock
         managed = self.root / "existing.json"
         managed.write_text(json.dumps(CredentialStorageTests.document))
-        options = args(self.root / "absent", managed)
-        options.credential_source = "device-code"
+        options = args(managed)
         with mock.patch("codex_cloud_api.device_code_login") as login:
             self.assertEqual((await acquire_credentials(options)).access_token, "access")
             login.assert_not_called()
-
-        missing = args(self.root / "missing", self.root / "other.json")
-        for source in ("file", "keyring"):
-            missing.credential_source = source
-            with mock.patch("codex_cloud_api.device_code_login") as login:
-                with self.assertRaises(AuthError):
-                    await acquire_credentials(missing)
-                login.assert_not_called()
 
 
 if __name__ == "__main__":

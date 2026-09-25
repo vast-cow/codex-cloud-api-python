@@ -2,8 +2,8 @@
 """
 Call Codex/ChatGPT backend APIs using a private, plain-text JSON credential file.
 
-On first use, credentials are imported from Codex or obtained interactively with
-Codex's ChatGPT Device Code Flow.  A separate ``codex login`` is not required.
+On first use, credentials are obtained interactively with Codex's ChatGPT Device
+Code Flow.  A separate ``codex login`` is not required.
 
 Examples:
   python codex_cloud_api.py GET /wham/environments
@@ -13,9 +13,6 @@ Examples:
 
 Dependencies:
   pip install aiohttp
-
-Optional (only for the legacy/direct OS-keyring store):
-  pip install keyring
 
 Security properties:
   * Never prints access/refresh tokens.
@@ -31,7 +28,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import hashlib
 import json
 import os
 import sys
@@ -56,7 +52,6 @@ DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 DEFAULT_CREDENTIAL_HOME = Path.home() / ".codex-cloud-api"
 
-KEYRING_SERVICE = "Codex Auth"
 TRUSTED_CHATGPT_HOSTS = {
     "chatgpt.com",
     "chat.openai.com",
@@ -131,53 +126,6 @@ class AuthJsonStore:
                 raise
 
 
-class DirectKeyringStore:
-    """Compatibility with Codex's direct keyring backend.
-
-    Newer Codex builds can also use an encrypted `secrets/codex_auth.age` store.
-    That format is intentionally not reimplemented here.
-    """
-
-    def __init__(self, codex_home: Path):
-        self.codex_home = codex_home
-        canonical = codex_home.resolve(strict=False)
-        digest = hashlib.sha256(str(canonical).encode()).hexdigest()[:16]
-        self.account = f"cli|{digest}"
-        self.description = f"OS keyring service={KEYRING_SERVICE!r} account={self.account!r}"
-
-    @staticmethod
-    def _keyring():
-        try:
-            import keyring  # type: ignore
-        except ImportError as exc:
-            raise AuthError(
-                "Python package 'keyring' is required for --credential-source keyring; "
-                "install it with: pip install keyring"
-            ) from exc
-        return keyring
-
-    def load(self) -> dict[str, Any] | None:
-        keyring = self._keyring()
-        try:
-            serialized = keyring.get_password(KEYRING_SERVICE, self.account)
-        except Exception as exc:
-            raise AuthError(f"failed to read Codex credential from OS keyring: {exc}") from exc
-        if serialized is None:
-            return None
-        try:
-            return json.loads(serialized)
-        except json.JSONDecodeError as exc:
-            raise AuthError("Codex keyring credential is not valid JSON") from exc
-
-    def save(self, value: dict[str, Any]) -> None:
-        keyring = self._keyring()
-        serialized = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-        try:
-            keyring.set_password(KEYRING_SERVICE, self.account, serialized)
-        except Exception as exc:
-            raise AuthError(f"failed to update Codex credential in OS keyring: {exc}") from exc
-
-
 @dataclass
 class Credentials:
     access_token: str
@@ -246,7 +194,7 @@ def extract_credentials(doc: dict[str, Any], store: Store) -> Credentials:
         if doc.get("OPENAI_API_KEY"):
             raise AuthError(
                 f"{store.description} contains API-key auth ({mode!r}), not ChatGPT OAuth tokens. "
-                "Run `codex login` with ChatGPT authentication for backend-api/wham calls."
+                "Delete or replace this credential file to sign in with ChatGPT OAuth."
             )
         if doc.get("personal_access_token") or doc.get("agent_identity"):
             raise AuthError(
@@ -283,56 +231,9 @@ def load_from_store(store: Store) -> Credentials | None:
 
 
 def choose_store(args: argparse.Namespace) -> Credentials | None:
-    codex_home = Path(args.codex_home).expanduser()
-    codex_auth_file = codex_home / "auth.json"
     credential_file = Path(args.credential_file).expanduser()
     destination = AuthJsonStore(credential_file)
-
-    if credential_file.resolve(strict=False) == codex_auth_file.resolve(strict=False):
-        raise AuthError(
-            "the managed credential file must be separate from the Codex auth file; "
-            "choose a different --credential-file"
-        )
-
-    # Once imported, this program owns and refreshes its copy.  In particular, a
-    # refresh-token rotation must never modify the Codex CLI's credential store.
-    creds = load_from_store(destination)
-    if creds is not None:
-        return creds
-
-    if args.credential_source == "file":
-        creds = load_from_store(AuthJsonStore(codex_auth_file))
-        if creds is None:
-            raise AuthError(f"Codex auth file not found: {codex_auth_file}")
-        return import_credentials(creds, destination)
-
-    if args.credential_source == "keyring":
-        creds = load_from_store(DirectKeyringStore(codex_home))
-        if creds is None:
-            raise AuthError("no Codex credential found in the direct OS keyring store")
-        return import_credentials(creds, destination)
-
-    if args.credential_source == "device-code":
-        return None
-
-    # Match Codex AutoAuthStorage ordering as closely as practical: keyring, then file.
-    try:
-        creds = load_from_store(DirectKeyringStore(codex_home))
-        if creds is not None:
-            return import_credentials(creds, destination)
-    except AuthError as exc:
-        if args.verbose:
-            print(f"note: direct keyring unavailable: {exc}", file=sys.stderr)
-
-    try:
-        creds = load_from_store(AuthJsonStore(codex_auth_file))
-        if creds is not None:
-            return import_credentials(creds, destination)
-    except AuthError as exc:
-        if args.verbose:
-            print(f"note: Codex auth file is unusable: {exc}", file=sys.stderr)
-
-    return None
+    return load_from_store(destination)
 
 
 def oauth_client_id() -> str:
@@ -472,15 +373,6 @@ async def acquire_credentials(args: argparse.Namespace) -> Credentials:
         return credentials
     destination = AuthJsonStore(Path(args.credential_file).expanduser())
     return await device_code_login(destination, request_timeout=args.timeout)
-
-
-def import_credentials(creds: Credentials, destination: AuthJsonStore) -> Credentials:
-    """Copy imported credentials into this application's independent JSON store."""
-    # A JSON round trip both copies the nested document and guarantees that the
-    # value written is representable by the store.
-    document = json.loads(json.dumps(creds.auth_document))
-    destination.save(document)
-    return extract_credentials(document, destination)
 
 
 def validate_base_url(value: str) -> str:
@@ -793,11 +685,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BASE_URL,
         help=f"trusted ChatGPT API base (default: {DEFAULT_BASE_URL})",
     )
-    parser.add_argument(
-        "--codex-home",
-        default=os.environ.get("CODEX_HOME", str(Path.home() / ".codex")),
-        help="Codex home directory (default: $CODEX_HOME or ~/.codex)",
-    )
     default_credential_file = os.environ.get(
         "CODEX_CLOUD_API_CREDENTIALS", str(DEFAULT_CREDENTIAL_HOME / "credentials.json")
     )
@@ -809,15 +696,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "plain-text JSON credential file managed by this tool "
             "(default: $CODEX_CLOUD_API_CREDENTIALS or ~/.codex-cloud-api/credentials.json)"
-        ),
-    )
-    parser.add_argument(
-        "--credential-source",
-        choices=("auto", "file", "keyring", "device-code"),
-        default="auto",
-        help=(
-            "where to obtain credentials when the managed file is absent; auto imports from "
-            "Codex then starts Device Code login (default: auto)"
         ),
     )
     parser.add_argument(
