@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-cloud-api"
+version = "1.0.0"
+description = "Async Python client for unofficial Codex Cloud backend endpoints"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = ["aiohttp>=3.9"]
+
+[project.scripts]
+codex-cloud-api = "codex_cloud_api.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["codex_cloud_api*"]
