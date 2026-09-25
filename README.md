@@ -69,6 +69,17 @@ The newly issued OAuth document is written as a plain-text JSON file at:
 ~/.codex-cloud-api/credentials.json
 ```
 
+To perform only this initial authentication step without sending an API request,
+use:
+
+```bash
+python codex_cloud_api.py --login-only
+```
+
+If credentials already exist, this command validates and reuses them rather than
+starting another login. Delete the credential file first when a fresh login is
+required.
+
 The directory and file are created with owner-only permissions on POSIX systems.
 All later reads and token-refresh writes use this file. Delete it to start a new
 Device Code login on the next request.
@@ -108,6 +119,12 @@ The general syntax is:
 
 ```text
 python codex_cloud_api.py METHOD PATH [OPTIONS]
+```
+
+Alternatively, initialize credentials without making a request:
+
+```text
+python codex_cloud_api.py --login-only [OPTIONS]
 ```
 
 For example:

@@ -9,11 +9,14 @@ from pathlib import Path
 
 from codex_cloud_api import (
     AuthError,
+    CodexApiError,
     DEVICE_REDIRECT_URI,
     DEVICE_TOKEN_URL,
     DEVICE_USER_CODE_URL,
     REFRESH_TOKEN_URL,
     acquire_credentials,
+    async_main,
+    build_parser,
     choose_store,
     device_code_login,
 )
@@ -179,6 +182,35 @@ class DeviceCodeTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("codex_cloud_api.device_code_login") as login:
             self.assertEqual((await acquire_credentials(options)).access_token, "access")
             login.assert_not_called()
+
+
+class LoginOnlyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.managed = Path(self.temp.name) / "credentials.json"
+        self.managed.write_text(json.dumps(CredentialStorageTests.document))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    async def test_login_only_accepts_no_request_arguments(self):
+        options = build_parser().parse_args([
+            "--login-only", "--credential-file", str(self.managed)
+        ])
+
+        self.assertEqual(await async_main(options), 0)
+
+    async def test_regular_invocation_still_requires_method_and_path(self):
+        options = build_parser().parse_args([])
+
+        with self.assertRaisesRegex(CodexApiError, "METHOD and PATH are required"):
+            await async_main(options)
+
+    async def test_login_only_rejects_request_arguments(self):
+        options = build_parser().parse_args(["GET", "/wham/environments", "--login-only"])
+
+        with self.assertRaisesRegex(CodexApiError, "cannot be used with --login-only"):
+            await async_main(options)
 
 
 if __name__ == "__main__":

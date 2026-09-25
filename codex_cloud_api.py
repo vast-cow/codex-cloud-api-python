@@ -678,8 +678,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Call Codex/ChatGPT backend APIs using an independent JSON credential file."
     )
-    parser.add_argument("method", help="HTTP method, e.g. GET, POST, PATCH, DELETE")
-    parser.add_argument("path", help="API path, e.g. /wham/environments")
+    parser.add_argument(
+        "method",
+        nargs="?",
+        help="HTTP method, e.g. GET, POST, PATCH, DELETE (omitted with --login-only)",
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="API path, e.g. /wham/environments (omitted with --login-only)",
+    )
     parser.add_argument(
         "--base-url",
         default=DEFAULT_BASE_URL,
@@ -727,6 +735,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="never refresh the OAuth token; useful for read-only diagnostics",
     )
+    parser.add_argument(
+        "--login-only",
+        action="store_true",
+        help="create or validate the managed credentials, then exit without an API request",
+    )
     parser.add_argument("--raw", action="store_true", help="write response body without JSON pretty-printing")
     parser.add_argument(
         "--include-headers", action="store_true", help="print response headers to stderr"
@@ -738,8 +751,17 @@ def build_parser() -> argparse.ArgumentParser:
 async def async_main(args: argparse.Namespace) -> int:
     if args.timeout <= 0:
         raise CodexApiError("--timeout must be greater than zero")
+    if args.login_only:
+        if args.method is not None or args.path is not None:
+            raise CodexApiError("METHOD and PATH cannot be used with --login-only")
+    elif args.method is None or args.path is None:
+        raise CodexApiError("METHOD and PATH are required unless --login-only is used")
 
     creds = await acquire_credentials(args)
+    if args.login_only:
+        print(f"Authentication ready: {creds.store.description}", file=sys.stderr)
+        return 0
+
     base_url = validate_base_url(args.base_url)
     url = build_api_url(base_url, args.path, args.query)
     extra_headers = parse_extra_headers(args.header)
