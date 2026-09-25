@@ -2,14 +2,17 @@
 
 A small Python utility for calling Codex / ChatGPT backend APIs using credentials kept in its own plain-text JSON file, separate from the Codex CLI.
 
-It reuses the ChatGPT OAuth credentials stored by `codex login`, automatically attaches the required authentication headers, refreshes expired access tokens when possible, and lets you issue arbitrary HTTP requests to Codex backend paths.
+It reuses an existing Codex ChatGPT session when available, or performs an interactive
+Device Code login on first use. It automatically attaches the required authentication
+headers, refreshes expired access tokens when possible, and lets you issue arbitrary
+HTTP requests to Codex backend paths.
 
 > [!WARNING]
 > This project relies on implementation details of the Codex CLI and ChatGPT backend. The `/backend-api/wham/...` endpoints are not a stable public OpenAI API contract and may change without notice.
 
 ## Features
 
-* Imports credentials created by `codex login` on first use
+* Imports credentials created by `codex login`, or signs in with Device Code, on first use
 * Manages its own plain-text `~/.codex-cloud-api/credentials.json` file
 * Never writes token refreshes back to the original Codex store
 * Can import from `~/.codex/auth.json` or the Codex direct OS keyring store
@@ -43,8 +46,7 @@ It reuses the ChatGPT OAuth credentials stored by `codex login`, automatically a
 ## Requirements
 
 * Python 3.10+
-* An existing Codex CLI installation
-* A ChatGPT-authenticated Codex session
+* A ChatGPT account (an existing Codex installation/session is optional)
 
 Install the required Python dependency:
 
@@ -60,14 +62,19 @@ pip install keyring
 
 ## Authentication
 
-First authenticate using the official Codex CLI:
+Run a request directly; a separate `codex login` is not required:
 
 ```bash
-codex login
+python codex_cloud_api.py GET /wham/environments
 ```
 
-On the first request, this tool imports the OAuth document from Codex and writes an
-independent plain-text JSON copy to:
+With the default `--credential-source auto`, the tool first tries the Codex direct
+keyring and `$CODEX_HOME/auth.json`. If neither contains usable credentials, it prints
+`https://auth.openai.com/codex/device` and a one-time code. Open that URL, sign in to
+ChatGPT, and enter the displayed code. The original request continues after approval.
+
+The imported or newly issued OAuth document is written as an independent plain-text
+JSON copy to:
 
 ```text
 ~/.codex-cloud-api/credentials.json
@@ -105,15 +112,19 @@ The expected JSON structure is:
 }
 ```
 
-The script never intentionally prints the access token or refresh token.
+The script prints only the short-lived user code, never OAuth tokens, authorization
+codes, or the PKCE verifier. Subsequent runs reuse the saved credentials and refresh
+them with the existing refresh-token implementation when necessary.
 
 ### Import sources
 
-When its managed credential file does not yet exist, the tool imports from the
-Codex direct OS keyring first and then `$CODEX_HOME/auth.json`. Use
-`--credential-source file` or `--credential-source keyring` to force the import
-source. Encrypted Codex stores such as `~/.codex/secrets/codex_auth.age` cannot be
-imported; configure Codex file storage and sign in again before the initial import.
+When its managed credential file does not yet exist, `auto` imports from the Codex
+direct OS keyring first, then `$CODEX_HOME/auth.json`, and finally starts Device Code
+login. Use `--credential-source file` or `--credential-source keyring` to require that
+specific import source without a login fallback. Use `--credential-source device-code`
+to skip Codex import and sign in directly. An existing managed file always takes
+precedence. Encrypted Codex stores such as `~/.codex/secrets/codex_auth.age` are not
+read; `auto` can simply create this tool's own session instead.
 
 ## Basic usage
 
@@ -381,14 +392,22 @@ python codex_cloud_api.py GET /wham/environments \
 
 `CODEX_CLOUD_API_CREDENTIALS` changes the default without adding a command-line
 option. If the managed file is absent, `--credential-source auto` imports once
-from the Codex keyring or `$CODEX_HOME/auth.json`. To force the initial source:
+from the Codex keyring or `$CODEX_HOME/auth.json`, or launches Device Code login when
+neither is usable. To force the initial source:
 
 ```bash
 python codex_cloud_api.py GET /wham/environments \
   --credential-source file
 ```
 
-or install `keyring` and use `--credential-source keyring`. `--codex-home` and
+or install `keyring` and use `--credential-source keyring`. To explicitly log in:
+
+```bash
+python codex_cloud_api.py GET /wham/environments \
+  --credential-source device-code
+```
+
+`--codex-home` and
 `CODEX_HOME` identify only the original Codex installation used for that initial
 import; they do not change this tool's managed credential location.
 
@@ -657,7 +676,7 @@ usage: codex_cloud_api.py [-h]
                     [--base-url BASE_URL]
                     [--codex-home CODEX_HOME]
                     [--credential-file CREDENTIAL_FILE]
-                    [--credential-source {auto,file,keyring}]
+                    [--credential-source {auto,file,keyring,device-code}]
                     [--account-id ACCOUNT_ID]
                     [--query NAME=VALUE]
                     [--header NAME:VALUE]
@@ -728,9 +747,11 @@ or:
 
 Use a specific independent plain-text JSON credential file. `--auth-file` is a legacy alias.
 
-`--credential-source auto|file|keyring`
+`--credential-source auto|file|keyring|device-code`
 
-Select the one-time import source when the managed file is absent.
+Select how to obtain credentials when the managed file is absent. `auto` tries the
+keyring, the Codex auth file, then Device Code. Explicit `file` and `keyring` choices
+fail if unavailable; `device-code` starts interactive login.
 
 Default:
 
@@ -884,9 +905,9 @@ It does not impersonate all other Codex authentication modes, including:
 
 ## Why this exists
 
-Codex CLI already contains the difficult parts of authentication:
+This tool follows the Codex CLI's Device Code authentication protocol, including:
 
-* ChatGPT login
+* ChatGPT first-time login
 * OAuth token issuance
 * account/workspace selection
 * refresh-token handling

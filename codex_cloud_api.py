@@ -2,6 +2,9 @@
 """
 Call Codex/ChatGPT backend APIs using a private, plain-text JSON credential file.
 
+On first use, credentials are imported from Codex or obtained interactively with
+Codex's ChatGPT Device Code Flow.  A separate ``codex login`` is not required.
+
 Examples:
   python codex_cloud_api.py GET /wham/environments
   python codex_cloud_api.py GET /wham/tasks/list --query limit=20
@@ -45,6 +48,10 @@ import aiohttp
 
 DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
 REFRESH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+DEVICE_USER_CODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode"
+DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token"
+DEVICE_VERIFICATION_URL = "https://auth.openai.com/codex/device"
+DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
 # Current public OAuth client id used by Codex CLI. May change upstream.
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 DEFAULT_CREDENTIAL_HOME = Path.home() / ".codex-cloud-api"
@@ -275,7 +282,7 @@ def load_from_store(store: Store) -> Credentials | None:
     return extract_credentials(doc, store)
 
 
-def choose_store(args: argparse.Namespace) -> Credentials:
+def choose_store(args: argparse.Namespace) -> Credentials | None:
     codex_home = Path(args.codex_home).expanduser()
     codex_auth_file = codex_home / "auth.json"
     credential_file = Path(args.credential_file).expanduser()
@@ -305,6 +312,9 @@ def choose_store(args: argparse.Namespace) -> Credentials:
             raise AuthError("no Codex credential found in the direct OS keyring store")
         return import_credentials(creds, destination)
 
+    if args.credential_source == "device-code":
+        return None
+
     # Match Codex AutoAuthStorage ordering as closely as practical: keyring, then file.
     try:
         creds = load_from_store(DirectKeyringStore(codex_home))
@@ -314,22 +324,154 @@ def choose_store(args: argparse.Namespace) -> Credentials:
         if args.verbose:
             print(f"note: direct keyring unavailable: {exc}", file=sys.stderr)
 
-    creds = load_from_store(AuthJsonStore(codex_auth_file))
-    if creds is not None:
-        return import_credentials(creds, destination)
+    try:
+        creds = load_from_store(AuthJsonStore(codex_auth_file))
+        if creds is not None:
+            return import_credentials(creds, destination)
+    except AuthError as exc:
+        if args.verbose:
+            print(f"note: Codex auth file is unusable: {exc}", file=sys.stderr)
 
-    encrypted = codex_home / "secrets" / "codex_auth.age"
-    if encrypted.exists():
-        raise AuthError(
-            f"Codex credentials appear to be in the encrypted store {encrypted}. "
-            "This script supports auth.json and the legacy/direct keyring layout, but deliberately "
-            "does not duplicate Codex's age-encrypted secrets implementation. Configure Codex to use "
-            "file credential storage and sign in again, or extend Store for that backend."
+    return None
+
+
+def oauth_client_id() -> str:
+    return os.environ.get("CODEX_APP_SERVER_LOGIN_CLIENT_ID", "").strip() or DEFAULT_CODEX_CLIENT_ID
+
+
+def _required_string(document: Any, field: str, context: str) -> str:
+    value = document.get(field) if isinstance(document, dict) else None
+    if not isinstance(value, str) or not value:
+        # Do not include response bodies here: authentication responses can contain secrets.
+        raise AuthError(f"{context} response is missing {field}")
+    return value
+
+
+async def device_code_login(
+    destination: AuthJsonStore,
+    *,
+    request_timeout: float = 60.0,
+    login_timeout: float = 15 * 60,
+    sleep: Any = asyncio.sleep,
+    monotonic: Any = time.monotonic,
+    session: aiohttp.ClientSession | None = None,
+) -> Credentials:
+    """Authenticate with the fixed OpenAI Codex Device Code endpoints."""
+    client_id = oauth_client_id()
+    owns_session = session is None
+    if session is None:
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=request_timeout))
+    try:
+        async with session.post(
+            DEVICE_USER_CODE_URL,
+            json={"client_id": client_id},
+            headers={"Accept": "application/json"},
+            allow_redirects=False,
+        ) as response:
+            if not 200 <= response.status < 300:
+                raise AuthError(f"Device Code user-code request failed: HTTP {response.status}")
+            try:
+                user_response = await response.json(content_type=None)
+            except (ValueError, aiohttp.ClientError) as exc:
+                raise AuthError("Device Code user-code request returned invalid JSON") from exc
+
+        device_auth_id = _required_string(user_response, "device_auth_id", "Device Code user-code")
+        user_code = None
+        if isinstance(user_response, dict):
+            user_code = user_response.get("user_code") or user_response.get("usercode")
+        if not isinstance(user_code, str) or not user_code:
+            raise AuthError("Device Code user-code response is missing user_code")
+        try:
+            interval = float(user_response.get("interval", 5))
+        except (TypeError, ValueError):
+            interval = 5.0
+        if interval <= 0:
+            interval = 5.0
+
+        print("ChatGPT authentication is required.", file=sys.stderr)
+        print(f"1. Open {DEVICE_VERIFICATION_URL} in a browser.", file=sys.stderr)
+        print("2. Sign in to ChatGPT.", file=sys.stderr)
+        print(f"3. Enter this one-time code: {user_code}", file=sys.stderr)
+
+        deadline = monotonic() + login_timeout
+        authorized: Any = None
+        while monotonic() < deadline:
+            async with session.post(
+                DEVICE_TOKEN_URL,
+                json={"device_auth_id": device_auth_id, "user_code": user_code},
+                headers={"Accept": "application/json"},
+                allow_redirects=False,
+            ) as response:
+                if response.status in (403, 404):
+                    authorized = None
+                elif not 200 <= response.status < 300:
+                    raise AuthError(f"Device Code authorization failed: HTTP {response.status}")
+                else:
+                    try:
+                        authorized = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ClientError) as exc:
+                        raise AuthError("Device Code authorization returned invalid JSON") from exc
+            if authorized is not None:
+                break
+            await sleep(interval)
+        if authorized is None:
+            raise AuthError("Device Code authentication timed out after approximately 15 minutes")
+
+        authorization_code = _required_string(
+            authorized, "authorization_code", "Device Code authorization"
         )
+        code_verifier = _required_string(authorized, "code_verifier", "Device Code authorization")
+        # Codex returns a challenge as well. Validate its presence even though the
+        # token exchange needs the verifier rather than the challenge.
+        _required_string(authorized, "code_challenge", "Device Code authorization")
+        async with session.post(
+            REFRESH_TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "code": authorization_code,
+                "redirect_uri": DEVICE_REDIRECT_URI,
+                "code_verifier": code_verifier,
+            },
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            allow_redirects=False,
+        ) as response:
+            if not 200 <= response.status < 300:
+                raise AuthError(f"OAuth authorization-code exchange failed: HTTP {response.status}")
+            try:
+                token_response = await response.json(content_type=None)
+            except (ValueError, aiohttp.ClientError) as exc:
+                raise AuthError("OAuth authorization-code exchange returned invalid JSON") from exc
 
-    raise AuthError(
-        f"no usable Codex ChatGPT credentials found under {codex_home}; run `codex login` first"
-    )
+        id_token = _required_string(token_response, "id_token", "OAuth token")
+        access_token = _required_string(token_response, "access_token", "OAuth token")
+        refresh_token = _required_string(token_response, "refresh_token", "OAuth token")
+        document = {
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": id_token,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "account_id": account_id_from_id_token(id_token),
+            },
+            "last_refresh": utc_now_rfc3339(),
+        }
+        destination.save(document)
+        return extract_credentials(document, destination)
+    finally:
+        if owns_session:
+            await session.close()
+
+
+async def acquire_credentials(args: argparse.Namespace) -> Credentials:
+    credentials = choose_store(args)
+    if credentials is not None:
+        return credentials
+    destination = AuthJsonStore(Path(args.credential_file).expanduser())
+    return await device_code_login(destination, request_timeout=args.timeout)
 
 
 def import_credentials(creds: Credentials, destination: AuthJsonStore) -> Credentials:
@@ -514,12 +656,11 @@ class CodexAuthSession:
             refresh_token = self.creds.refresh_token
             if not refresh_token:
                 raise RefreshError(
-                    "this Codex credential has no refresh_token; run `codex login` again or disable refresh"
+                    "this credential has no refresh_token; remove the managed credential file and "
+                    "authenticate again, or disable refresh"
                 )
 
-            client_id = os.environ.get("CODEX_APP_SERVER_LOGIN_CLIENT_ID", "").strip()
-            if not client_id:
-                client_id = DEFAULT_CODEX_CLIENT_ID
+            client_id = oauth_client_id()
 
             if self.verbose:
                 print("auth: refreshing ChatGPT OAuth token", file=sys.stderr)
@@ -672,9 +813,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--credential-source",
-        choices=("auto", "file", "keyring"),
+        choices=("auto", "file", "keyring", "device-code"),
         default="auto",
-        help="where to import credentials from when the managed file is absent (default: auto)",
+        help=(
+            "where to obtain credentials when the managed file is absent; auto imports from "
+            "Codex then starts Device Code login (default: auto)"
+        ),
     )
     parser.add_argument(
         "--account-id",
@@ -717,7 +861,7 @@ async def async_main(args: argparse.Namespace) -> int:
     if args.timeout <= 0:
         raise CodexApiError("--timeout must be greater than zero")
 
-    creds = choose_store(args)
+    creds = await acquire_credentials(args)
     base_url = validate_base_url(args.base_url)
     url = build_api_url(base_url, args.path, args.query)
     extra_headers = parse_extra_headers(args.header)
