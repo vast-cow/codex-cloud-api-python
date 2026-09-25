@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Call Codex/ChatGPT backend APIs using credentials already stored by Codex CLI.
+Call Codex/ChatGPT backend APIs using a private, plain-text JSON credential file.
 
 Examples:
   python codex_cloud_api.py GET /wham/environments
@@ -47,6 +47,7 @@ DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
 REFRESH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 # Current public OAuth client id used by Codex CLI. May change upstream.
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+DEFAULT_CREDENTIAL_HOME = Path.home() / ".codex-cloud-api"
 
 KEYRING_SERVICE = "Codex Auth"
 TRUSTED_CHATGPT_HOSTS = {
@@ -95,7 +96,10 @@ class AuthJsonStore:
             raise AuthError(f"invalid JSON in {self.path}: {exc}") from exc
 
     def save(self, value: dict[str, Any]) -> None:
+        parent_existed = self.path.parent.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix" and not parent_existed:
+            os.chmod(self.path.parent, 0o700)
         payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
 
         # Atomic replace, with 0600 permissions on POSIX.
@@ -273,32 +277,46 @@ def load_from_store(store: Store) -> Credentials | None:
 
 def choose_store(args: argparse.Namespace) -> Credentials:
     codex_home = Path(args.codex_home).expanduser()
-    auth_file = Path(args.auth_file).expanduser() if args.auth_file else codex_home / "auth.json"
+    codex_auth_file = codex_home / "auth.json"
+    credential_file = Path(args.credential_file).expanduser()
+    destination = AuthJsonStore(credential_file)
+
+    if credential_file.resolve(strict=False) == codex_auth_file.resolve(strict=False):
+        raise AuthError(
+            "the managed credential file must be separate from the Codex auth file; "
+            "choose a different --credential-file"
+        )
+
+    # Once imported, this program owns and refreshes its copy.  In particular, a
+    # refresh-token rotation must never modify the Codex CLI's credential store.
+    creds = load_from_store(destination)
+    if creds is not None:
+        return creds
 
     if args.credential_source == "file":
-        creds = load_from_store(AuthJsonStore(auth_file))
+        creds = load_from_store(AuthJsonStore(codex_auth_file))
         if creds is None:
-            raise AuthError(f"Codex auth file not found: {auth_file}")
-        return creds
+            raise AuthError(f"Codex auth file not found: {codex_auth_file}")
+        return import_credentials(creds, destination)
 
     if args.credential_source == "keyring":
         creds = load_from_store(DirectKeyringStore(codex_home))
         if creds is None:
             raise AuthError("no Codex credential found in the direct OS keyring store")
-        return creds
+        return import_credentials(creds, destination)
 
     # Match Codex AutoAuthStorage ordering as closely as practical: keyring, then file.
     try:
         creds = load_from_store(DirectKeyringStore(codex_home))
         if creds is not None:
-            return creds
+            return import_credentials(creds, destination)
     except AuthError as exc:
         if args.verbose:
             print(f"note: direct keyring unavailable: {exc}", file=sys.stderr)
 
-    creds = load_from_store(AuthJsonStore(auth_file))
+    creds = load_from_store(AuthJsonStore(codex_auth_file))
     if creds is not None:
-        return creds
+        return import_credentials(creds, destination)
 
     encrypted = codex_home / "secrets" / "codex_auth.age"
     if encrypted.exists():
@@ -312,6 +330,15 @@ def choose_store(args: argparse.Namespace) -> Credentials:
     raise AuthError(
         f"no usable Codex ChatGPT credentials found under {codex_home}; run `codex login` first"
     )
+
+
+def import_credentials(creds: Credentials, destination: AuthJsonStore) -> Credentials:
+    """Copy imported credentials into this application's independent JSON store."""
+    # A JSON round trip both copies the nested document and guarantees that the
+    # value written is representable by the store.
+    document = json.loads(json.dumps(creds.auth_document))
+    destination.save(document)
+    return extract_credentials(document, destination)
 
 
 def validate_base_url(value: str) -> str:
@@ -478,10 +505,10 @@ class CodexAuthSession:
 
     async def refresh(self) -> None:
         async with self._refresh_lock:
-            # Another process may have refreshed since we loaded the file/keyring.
+            # Another process may have refreshed since we loaded the managed file.
             if self.reload_credentials():
                 if self.verbose:
-                    print("auth: reloaded newer token from Codex credential store", file=sys.stderr)
+                    print("auth: reloaded newer token from managed credential file", file=sys.stderr)
                 return
 
             refresh_token = self.creds.refresh_token
@@ -539,7 +566,7 @@ class CodexAuthSession:
                 latest_doc = self.creds.auth_document
             tokens = latest_doc.setdefault("tokens", {})
             if not isinstance(tokens, dict):
-                raise RefreshError("Codex credential store changed to an incompatible format")
+                raise RefreshError("managed credential file changed to an incompatible format")
 
             for key in ("id_token", "access_token", "refresh_token"):
                 value = refreshed.get(key)
@@ -578,7 +605,7 @@ class CodexAuthSession:
             return status, headers, body
 
         if self.verbose:
-            print("auth: API returned 401; reloading Codex credential store", file=sys.stderr)
+            print("auth: API returned 401; reloading managed credential file", file=sys.stderr)
         if self.reload_credentials():
             return await send_once()
 
@@ -616,7 +643,7 @@ def print_response(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Call Codex/ChatGPT backend APIs using Codex CLI credentials."
+        description="Call Codex/ChatGPT backend APIs using an independent JSON credential file."
     )
     parser.add_argument("method", help="HTTP method, e.g. GET, POST, PATCH, DELETE")
     parser.add_argument("path", help="API path, e.g. /wham/environments")
@@ -630,12 +657,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("CODEX_HOME", str(Path.home() / ".codex")),
         help="Codex home directory (default: $CODEX_HOME or ~/.codex)",
     )
-    parser.add_argument("--auth-file", help="explicit auth.json path")
+    default_credential_file = os.environ.get(
+        "CODEX_CLOUD_API_CREDENTIALS", str(DEFAULT_CREDENTIAL_HOME / "credentials.json")
+    )
+    parser.add_argument(
+        "--credential-file",
+        "--auth-file",
+        dest="credential_file",
+        default=default_credential_file,
+        help=(
+            "plain-text JSON credential file managed by this tool "
+            "(default: $CODEX_CLOUD_API_CREDENTIALS or ~/.codex-cloud-api/credentials.json)"
+        ),
+    )
     parser.add_argument(
         "--credential-source",
         choices=("auto", "file", "keyring"),
         default="auto",
-        help="where to load Codex credentials from (default: auto)",
+        help="where to import credentials from when the managed file is absent (default: auto)",
     )
     parser.add_argument(
         "--account-id",

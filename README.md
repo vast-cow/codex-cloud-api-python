@@ -1,6 +1,6 @@
 # Codex Cloud API CLI
 
-A small Python utility for calling Codex / ChatGPT backend APIs using credentials already managed by the Codex CLI.
+A small Python utility for calling Codex / ChatGPT backend APIs using credentials kept in its own plain-text JSON file, separate from the Codex CLI.
 
 It reuses the ChatGPT OAuth credentials stored by `codex login`, automatically attaches the required authentication headers, refreshes expired access tokens when possible, and lets you issue arbitrary HTTP requests to Codex backend paths.
 
@@ -9,9 +9,10 @@ It reuses the ChatGPT OAuth credentials stored by `codex login`, automatically a
 
 ## Features
 
-* Reuses credentials created by `codex login`
-* Supports `~/.codex/auth.json`
-* Supports the Codex direct OS keyring credential store
+* Imports credentials created by `codex login` on first use
+* Manages its own plain-text `~/.codex-cloud-api/credentials.json` file
+* Never writes token refreshes back to the original Codex store
+* Can import from `~/.codex/auth.json` or the Codex direct OS keyring store
 * Automatically sends:
 
   * `Authorization: Bearer <access_token>`
@@ -19,7 +20,7 @@ It reuses the ChatGPT OAuth credentials stored by `codex login`, automatically a
 * Proactively refreshes OAuth access tokens before expiration
 * Retries once after an HTTP `401`
 * Supports refresh-token rotation
-* Writes refreshed credentials back to the original credential store
+* Writes refreshed credentials only to its independent credential file
 * Supports arbitrary HTTP methods:
 
   * `GET`
@@ -65,17 +66,31 @@ First authenticate using the official Codex CLI:
 codex login
 ```
 
-This tool does not perform the interactive browser login flow itself. Instead, it reuses credentials already managed by Codex.
-
-Depending on your Codex configuration, credentials may be stored in:
+On the first request, this tool imports the OAuth document from Codex and writes an
+independent plain-text JSON copy to:
 
 ```text
-~/.codex/auth.json
+~/.codex-cloud-api/credentials.json
 ```
 
-or in the operating system's credential/keyring store.
+The directory and file are created with owner-only permissions on POSIX systems.
+All later reads and token-refresh writes use this independent file; the original
+Codex file or keyring entry is not changed. Because refresh tokens may rotate,
+Codex and this tool can subsequently hold different sessions. Run the command
+below after deleting the managed file if you intentionally want to import the
+current Codex session again.
 
-The expected OAuth credential structure contains values similar to:
+Override the managed location with either:
+
+```bash
+export CODEX_CLOUD_API_CREDENTIALS=/private/path/credentials.json
+python codex_cloud_api.py GET /wham/environments
+```
+
+or `--credential-file /private/path/credentials.json`. The legacy spelling
+`--auth-file` remains an alias for `--credential-file`.
+
+The expected JSON structure is:
 
 ```json
 {
@@ -92,17 +107,13 @@ The expected OAuth credential structure contains values similar to:
 
 The script never intentionally prints the access token or refresh token.
 
-### Encrypted Codex credential storage
+### Import sources
 
-Recent Codex versions may use an encrypted credential store such as:
-
-```text
-~/.codex/secrets/codex_auth.age
-```
-
-This script deliberately does not reimplement Codex's encrypted secrets subsystem.
-
-If your credentials exist only in that store, the tool will report that the credential format is unsupported.
+When its managed credential file does not yet exist, the tool imports from the
+Codex direct OS keyring first and then `$CODEX_HOME/auth.json`. Use
+`--credential-source file` or `--credential-source keyring` to force the import
+source. Encrypted Codex stores such as `~/.codex/secrets/codex_auth.age` cannot be
+imported; configure Codex file storage and sign in again before the initial import.
 
 ## Basic usage
 
@@ -353,81 +364,33 @@ Host
 Cookie
 ```
 
-## Credential sources
+## Credential storage and initial import
 
-The default mode is:
+The tool always operates on its own plain-text JSON credential file. Its default is:
 
 ```text
---credential-source auto
+~/.codex-cloud-api/credentials.json
 ```
 
-In automatic mode, the script tries:
+Choose another location with:
 
-1. The Codex direct OS keyring store
-2. `auth.json`
+```bash
+python codex_cloud_api.py GET /wham/environments \
+  --credential-file /private/path/credentials.json
+```
 
-### Force `auth.json`
+`CODEX_CLOUD_API_CREDENTIALS` changes the default without adding a command-line
+option. If the managed file is absent, `--credential-source auto` imports once
+from the Codex keyring or `$CODEX_HOME/auth.json`. To force the initial source:
 
 ```bash
 python codex_cloud_api.py GET /wham/environments \
   --credential-source file
 ```
 
-The default file is:
-
-```text
-$CODEX_HOME/auth.json
-```
-
-or, if `CODEX_HOME` is not set:
-
-```text
-~/.codex/auth.json
-```
-
-### Use a specific auth file
-
-```bash
-python codex_cloud_api.py GET /wham/environments \
-  --credential-source file \
-  --auth-file /path/to/auth.json
-```
-
-### Force OS keyring
-
-Install the optional dependency:
-
-```bash
-pip install keyring
-```
-
-Then:
-
-```bash
-python codex_cloud_api.py GET /wham/environments \
-  --credential-source keyring
-```
-
-## Custom Codex home
-
-By default, the tool uses:
-
-```text
-$CODEX_HOME
-```
-
-if set, otherwise:
-
-```text
-~/.codex
-```
-
-You can override it:
-
-```bash
-python codex_cloud_api.py GET /wham/environments \
-  --codex-home ~/.codex-work
-```
+or install `keyring` and use `--credential-source keyring`. `--codex-home` and
+`CODEX_HOME` identify only the original Codex installation used for that initial
+import; they do not change this tool's managed credential location.
 
 ## ChatGPT account/workspace selection
 
@@ -478,7 +441,7 @@ refresh_token
 id_token
 ```
 
-those values are written back to the original credential store.
+those values are written only to the independent managed credential file.
 
 This is important because OAuth refresh-token rotation may replace the previous refresh token.
 
@@ -486,7 +449,7 @@ This is important because OAuth refresh-token rotation may replace the previous 
 
 When an API request returns `401`, the tool:
 
-1. Reloads the Codex credential store in case another Codex process refreshed the token.
+1. Reloads the managed credential file in case another instance refreshed the token.
 2. Retries with the newer token if one exists.
 3. Otherwise performs an OAuth refresh.
 4. Retries the API request once.
@@ -515,7 +478,7 @@ python codex_cloud_api.py GET /wham/environments -v
 Verbose output includes information such as:
 
 ```text
-auth source: /home/user/.codex/auth.json
+auth source: /home/user/.codex-cloud-api/credentials.json
 request: GET https://chatgpt.com/backend-api/wham/environments
 account header: present
 access token expires: ...
@@ -693,7 +656,7 @@ fi
 usage: codex_cloud_api.py [-h]
                     [--base-url BASE_URL]
                     [--codex-home CODEX_HOME]
-                    [--auth-file AUTH_FILE]
+                    [--credential-file CREDENTIAL_FILE]
                     [--credential-source {auto,file,keyring}]
                     [--account-id ACCOUNT_ID]
                     [--query NAME=VALUE]
@@ -761,13 +724,13 @@ or:
 ~/.codex
 ```
 
-`--auth-file PATH`
+`--credential-file PATH`, `--auth-file PATH`
 
-Use a specific `auth.json` file.
+Use a specific independent plain-text JSON credential file. `--auth-file` is a legacy alias.
 
 `--credential-source auto|file|keyring`
 
-Select the credential source.
+Select the one-time import source when the managed file is absent.
 
 Default:
 
@@ -831,11 +794,12 @@ Enable diagnostic output.
 
 This tool handles credentials equivalent to an authenticated ChatGPT session. Treat it accordingly.
 
-### Do not expose `auth.json`
+### Do not expose credential JSON
 
 Never:
 
 * commit `~/.codex/auth.json` to Git
+* commit `~/.codex-cloud-api/credentials.json` to Git
 * paste its contents into issues
 * log access or refresh tokens
 * copy it to an untrusted machine
@@ -844,6 +808,7 @@ A suitable `.gitignore` entry is:
 
 ```gitignore
 auth.json
+credentials.json
 *.token
 ```
 
@@ -863,9 +828,9 @@ This avoids forwarding authentication headers to an unexpected redirect destinat
 
 Refresh tokens should be treated as long-lived credentials.
 
-If a refresh occurs and the authorization server rotates the refresh token, the script updates the credential store so that subsequent Codex CLI sessions can use the latest credential.
+If a refresh rotates the refresh token, the script updates only its managed JSON file. The original Codex installation remains untouched.
 
-Running multiple independent programs that modify the same Codex credential store may still cause races. Avoid manipulating the underlying credential files manually while requests are running.
+Running multiple instances that modify the same managed credential file may still cause races. Avoid editing it manually while requests are running.
 
 ## Limitations
 
@@ -893,10 +858,12 @@ The generic HTTP interface is intentional: most backend changes can be handled b
 
 The newer Codex encrypted credential store is not currently supported.
 
-The script supports:
+The script can initially import from:
 
-* `auth.json`
+* Codex `auth.json`
 * the direct OS keyring representation
+
+After import it supports only its own plain-text JSON credential file.
 
 It does not directly decrypt:
 
@@ -927,12 +894,12 @@ Codex CLI already contains the difficult parts of authentication:
 
 This tool provides a thin asynchronous HTTP client on top of those existing credentials so that backend behavior can be inspected or automated without reimplementing the full Codex CLI.
 
-The design intentionally keeps:
+The design intentionally keeps this tool's mutable credentials separate:
 
 ```text
-Codex credential storage
-        ↓
-OAuth authentication
+Codex login store ── one-time import ──→ independent JSON credentials
+                                            ↓
+                                    OAuth authentication
         ↓
 aiohttp transport
         ↓
